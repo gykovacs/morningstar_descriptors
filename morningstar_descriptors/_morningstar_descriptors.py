@@ -200,6 +200,7 @@ def get_financial_descriptors(tickers):
     sys.stdout.write('Downloading key ratios data for ')
     for t in tickers:
         sys.stdout.write('%s, ' % t)
+        sys.stdout.flush()
         url= 'http://financials.morningstar.com/ajax/exportKR2CSV.html?t=%s' % t
         try:
             s= requests.get(url).content
