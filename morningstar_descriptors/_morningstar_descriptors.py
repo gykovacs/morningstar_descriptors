@@ -8,10 +8,15 @@ Created on Thu Mar  1 22:18:31 2018
 
 __all__= ['get_sp500_descriptors',
           'get_djia_descriptors',
-          'get_financial_descriptors']
+          'get_financial_descriptors',
+          'get_balance_sheet_data',
+          'get_cashflow_data',
+          'get_income_statement_data']
 
 import sys
 import requests
+import json
+import datetime
 
 import pandas as pd
 
@@ -58,7 +63,29 @@ efficiency_names= ['Days Sales Outstanding', 'Days Inventory', 'Payables Period'
                    'Cash Conversion Cycle', 'Receivables Turnover', 'Inventory Turnover',
                    'Fixed Assets Turnover', 'Asset Turnover']
 
-def get_sp500_descriptors():
+def get_price_data(tickers, start= '2017-10-10', end= None):
+    end= end or datetime.datetime.now().strftime('%Y-%m-%d')
+    
+    results= {}
+    
+    sys.stdout.write('Downloading price data for ')
+    for ticker in tickers:
+        sys.stdout.write('%s, ' % ticker)
+        url= "http://globalquote.morningstar.com/globalcomponent/RealtimeHistoricalStockData.ashx?ticker=%s&showVol=true&dtype=his&f=d&curry=USD&range=%s|%s&isD=true&isS=true&hasF=true&ProdCode=DIRECT" % (ticker, start, end)
+        d= json.loads(requests.get(url).content.decode('utf-8'))
+        if not d is None and len(d) > 0:
+            results[ticker]= pd.DataFrame(data= d['PriceDataList'][0]['Datapoints'], index= pd.to_datetime('1900-1-1') + pd.to_timedelta(d['PriceDataList'][0]['DateIndexs'], unit= 'd'), columns= ['Open', 'High', 'Low', 'Close'])
+    print('')
+    
+    return results
+
+def get_sp500_price_data(start= '2017-10-10', end= '2018-3-9'):
+    return get_price_data(get_sp500_tickers(), start, end)
+
+def get_djia_price_data(start= '2017-10-10', end= '2018-3-9'):
+    return get_price_data(get_djia_tickers(), start, end)
+
+def get_sp500_tickers():
     """
     Get financial descriptors for S&P500 stocks
     Returns:
@@ -71,7 +98,25 @@ def get_sp500_descriptors():
     str_cols= data.select_dtypes(['object'])
     data[str_cols.columns]= str_cols.apply(lambda x: x.str.strip())
     
-    return get_financial_descriptors(data['Ticker symbol'].values)
+    return data.reset_index()[['Ticker symbol', 'GICS Sector']]
+
+def get_sp500_descriptors():
+    """
+    Get financial descriptors for S&P500 stocks
+    Returns:
+        dict(dict(pd.DataFrame)): the descriptors by stocks and categories
+    """
+
+    return get_financial_descriptors(get_sp500_tickers()['Ticker symbol'].values)
+
+def get_djia_tickers():
+    tables= import_tables("Dow Jones Industrial Average")
+    data= pd.DataFrame(tables[0].rows)
+    data= data.astype(str)
+    str_cols= data.select_dtypes(['object'])
+    data[str_cols.columns]= str_cols.apply(lambda x: x.str.strip())
+    
+    return data.reset_index()[['Symbol', 'Industry']]
 
 def get_djia_descriptors():
     """
@@ -80,14 +125,7 @@ def get_djia_descriptors():
         dict(dict(pd.DataFrame)): the descriptors by stocks and categories
     """
     
-    tables= import_tables("Dow Jones Industrial Average")
-    data= pd.DataFrame(tables[0].rows)
-    data= data.astype(str)
-    str_cols= data.select_dtypes(['object'])
-    data[str_cols.columns]= str_cols.apply(lambda x: x.str.strip())
-    
-    return get_financial_descriptors(data['Symbol'].values)
-    
+    return get_financial_descriptors(get_djia_tickers()['Symbol'].values)
 
 def convert_to_float(token):
     """
@@ -159,24 +197,192 @@ def get_financial_descriptors(tickers):
     
     raw_data= {}
     
-    sys.stdout.write('Downloading data for ')
+    sys.stdout.write('Downloading key ratios data for ')
     for t in tickers:
         sys.stdout.write('%s, ' % t)
         url= 'http://financials.morningstar.com/ajax/exportKR2CSV.html?t=%s' % t
         try:
             s= requests.get(url).content
             raw_data[t]= s.decode('utf-8')
+            while len(raw_data[t]) == 0:
+                s= requests.get(url).content
+                raw_data[t]= s.decode('utf-8')
         except:
             print('ERROR: downloading %s data failed' % t)
 
     print('')
 
+    sys.stdout.write('Processing ticker: ')
     result= {}
     for t in raw_data:
+        sys.stdout.write('%s ' % t)
         result[t]= process_raw_data(raw_data[t])
 
-    return result
+    print('')
     
+    return result
+
+def process_balance_sheet_raw_data(string):
+    lines= string.splitlines()
+    for i in range(len(lines)):
+        lines[i]= tokenize_line(lines[i])
+    
+    results= {}
+    index= None
+    
+    for i in range(len(lines)):
+        if len(lines[i]) == 0:
+            continue
+        
+        # extract identifier
+        identifier= lines[i][0]
+        
+        if identifier.startswith('Fiscal year ends in'):
+            index= lines[i][1:]
+        elif identifier in ['Cash and cash equivalents', 'Short-term investments',
+                            'Total cash', 'Receivables', 'Deferred income taxes',
+                            'Prepaid expenses', 'Total current assets', 
+                            'Gross property, plant and equipment', 'Accumulated Depreciation',
+                            'Net property, plant and equipment', 'Goodwill', 'Intangible assets',
+                            'Other long-term assets', 'Total non-current assets', 'Total assets',
+                            'Capital leases', 'Accounts payable', 'Taxes payable',
+                            'Accrued liabilities', 'Deferred revenues', 'Total current liabilities',
+                            'Long-term debt', 'Non-current capital leases', 'Deferred taxes liabilities',
+                            'Other long-term liabilities', 'Total non-current liabilities', 
+                            'Total liabilities', 'Common stock', 'Additional paid-in capital',
+                            'Retained earnings', 'Accumulated other comprehensive income',
+                            "Total stockholders' equity", "Total liabilities and stockholders' equity"] and len(lines[i]) > 1:
+            results[identifier]= lines[i][1:]
+    
+    return pd.DataFrame(data= results, index= index)
+
+def get_balance_sheet_data(tickers):
+    raw_data= {}
+    sys.stdout.write('Downloading balance sheet data for ')
+    for t in tickers:
+        sys.stdout.write('%s, ' % t)
+        url= 'http://financials.morningstar.com/ajax/ReportProcess4CSV.html?t=%s&reportType=bs&period=3&dataType=A&order=asc&columnYear=10&number=3' % t
+        try:
+            s= requests.get(url).content
+            raw_data[t]= s.decode('utf-8')
+        except:
+            print('Error: downloading %s data failed' % t)
+    
+    print('')
+    
+    results= {}
+    for t in raw_data:
+        results[t]= process_balance_sheet_raw_data(raw_data[t])
+        
+    return results
+
+def process_cashflow_raw_data(string):
+    lines= string.splitlines()
+    for i in range(len(lines)):
+        lines[i]= tokenize_line(lines[i])
+    
+    results= {}
+    index= None
+    
+    for i in range(len(lines)):
+        if len(lines[i]) == 0:
+            continue
+        
+        # extract identifier
+        identifier= lines[i][0]
+        
+        if identifier.startswith('Fiscal year ends in'):
+            index= lines[i][1:]
+        elif identifier in ['Net income', 'Depreciation & amortization',
+                            'Amortization of debt discount/premium and issuance costs',
+                            'Deferred income taxes',
+                            'Stock based compensation', 'Change in working capital',
+                            'Accounts receivable', 'Prepaid expenses', 'Accounts payable',
+                            'Accrued liabilities', 'Other non-cash items',
+                            'Net cash provided by operating activities', 
+                            'Investments in property, plant, and equipment',
+                            'Acquisitions, net', 'Purchases of investments',
+                            'Sales/Maturities of investments', 'Other investing activities',
+                            'Net cash used for investing activities',
+                            'Debt issued', 'Debt repayment', 'Warrant issued',
+                            'Common stock issued', 'Other financing activities',
+                            'Net cash provided by (used for) financing activities',
+                            'Effect of exchange rate changes', 'Net change in cash',
+                            'Cash at beginning of period', 'Cash at end of period',
+                            'OPerating cash flow', 'Capital expenditure', 'Free cash flow' ] and len(lines[i]) > 1:
+            results[identifier]= lines[i][1:]
+    
+    return pd.DataFrame(data= results, index= index)
+
+def get_cashflow_data(tickers):
+    raw_data= {}
+    sys.stdout.write('Downloading cashflow data for ')
+    for t in tickers:
+        sys.stdout.write('%s, ' % t)
+        url= 'http://financials.morningstar.com/ajax/ReportProcess4CSV.html?t=%s&reportType=cf&period=3&dataType=A&order=asc&columnYear=10&number=3' % t
+        try:
+            s= requests.get(url).content
+            raw_data[t]= s.decode('utf-8')
+        except:
+            print('Error: downloading %s data failed' % t)
+    
+    print('')
+    
+    results= {}
+    for t in raw_data:
+        results[t]= process_cashflow_raw_data(raw_data[t])
+        
+    return results
+
+def process_income_statement_raw_data(string):
+    lines= string.splitlines()
+    for i in range(len(lines)):
+        lines[i]= tokenize_line(lines[i])
+    
+    results= {}
+    index= None
+    
+    for i in range(len(lines)):
+        if len(lines[i]) == 0:
+            continue
+        
+        # extract identifier
+        identifier= lines[i][0]
+        
+        if identifier.startswith('Fiscal year ends in'):
+            index= lines[i][1:]
+        elif identifier in ['Revenue', 'Cost of revenue', 'Gross profit',
+                            'Research and development', 'Sales, General and administrative',
+                            'Total operating expenses', 'Operating income',
+                            'Interest Expense', 'Other income (expense)',
+                            'Income before taxes', 'Provision for income taxes',
+                            'Net income from continuing operations', 'Net income',
+                            'Preferred dividend', 'Net income available to common shareholders',
+                            'EBITDA'] and len(lines[i]) > 1:
+            results[identifier]= lines[i][1:]
+    
+    return pd.DataFrame(data= results, index= index)
+
+def get_income_statement_data(tickers):
+    raw_data= {}
+    sys.stdout.write('Downloading income statement data for ')
+    for t in tickers:
+        sys.stdout.write('%s, ' % t)
+        url= 'http://financials.morningstar.com/ajax/ReportProcess4CSV.html?t=%s&reportType=is&period=3&dataType=A&order=asc&columnYear=10&number=3' % t
+        try:
+            s= requests.get(url).content
+            raw_data[t]= s.decode('utf-8')
+        except:
+            print('Error: downloading %s data failed' % t)
+    
+    print('')
+    
+    results= {}
+    for t in raw_data:
+        results[t]= process_income_statement_raw_data(raw_data[t])
+        
+    return results
+
 def process_raw_data(string):
     """
     Processes the raw data downloaded from morningstar.
@@ -185,6 +391,8 @@ def process_raw_data(string):
     Returns:
         dict(pd.DataFrame): the financial descriptors by categories
     """
+    
+    #print(string)
     
     # split the string to lines
     lines= string.splitlines()
@@ -205,6 +413,7 @@ def process_raw_data(string):
         
         # extract identifier
         identifier= lines[i][0]
+        #print("id: " + str(identifier))
         
         # handle category identifiers
         if identifier == 'Financials':
