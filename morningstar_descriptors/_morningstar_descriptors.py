@@ -6,12 +6,15 @@ Created on Thu Mar  1 22:18:31 2018
 @author: gykovacs
 """
 
-__all__= ['get_sp500_descriptors',
+__all__= ['get_price_data',
+          'get_sp500_price_data',
+          'get_sp500_descriptors',
           'get_djia_descriptors',
-          'get_financial_descriptors',
+          'get_key_financial_descriptors',
           'get_balance_sheet_data',
           'get_cashflow_data',
-          'get_income_statement_data']
+          'get_income_statement_data',
+          'get_sp500_tickers']
 
 import sys
 import requests
@@ -107,7 +110,7 @@ def get_sp500_descriptors():
         dict(dict(pd.DataFrame)): the descriptors by stocks and categories
     """
 
-    return get_financial_descriptors(get_sp500_tickers()['Ticker symbol'].values)
+    return get_key_financial_descriptors(get_sp500_tickers()['Ticker symbol'].values)
 
 def get_djia_tickers():
     tables= import_tables("Dow Jones Industrial Average")
@@ -125,7 +128,7 @@ def get_djia_descriptors():
         dict(dict(pd.DataFrame)): the descriptors by stocks and categories
     """
     
-    return get_financial_descriptors(get_djia_tickers()['Symbol'].values)
+    return get_key_financial_descriptors(get_djia_tickers()['Symbol'].values)
 
 def convert_to_float(token):
     """
@@ -186,7 +189,22 @@ def tokenize_line(line):
 
     return tokens
 
-def get_financial_descriptors(tickers):
+def get_data_from_url(url, max_trials= 10):
+    try:
+        s= requests.get(url).content
+        d= s.decode('utf-8')
+        num_trials= 0
+        while len(d) == 0 and num_trials < max_trials:
+            s= requests.get(url).content
+            d= s.decode('utf-8')
+            num_trials= num_trials + 1
+            sys.stdout.write('.')
+    except Exception as e:
+        print('ERROR: downloading data failed: %s' % str(e))
+        
+    return d
+
+def get_key_financial_descriptors(tickers, max_trials= 10):
     """
     Downloads and tokenizes morningstar financial data.
     Args:
@@ -201,15 +219,17 @@ def get_financial_descriptors(tickers):
     for t in tickers:
         sys.stdout.write('%s, ' % t)
         sys.stdout.flush()
-        url= 'http://financials.morningstar.com/ajax/exportKR2CSV.html?t=%s' % t
-        try:
-            s= requests.get(url).content
-            raw_data[t]= s.decode('utf-8')
-            while len(raw_data[t]) == 0:
-                s= requests.get(url).content
-                raw_data[t]= s.decode('utf-8')
-        except:
-            print('ERROR: downloading %s data failed' % t)
+        num_trials= 0
+        
+        while num_trials < max_trials:
+            num_trials= num_trials + 1
+            url= 'http://financials.morningstar.com/ajax/exportKR2CSV.html?t=%s' % t
+            data= get_data_from_url(url)
+            if len(data) > 0:
+                raw_data[t]= data
+                break
+            else:
+                print('WARNING: downloading %s data failed at trial %d' % (t, num_trials))
 
     print('')
 
@@ -217,7 +237,7 @@ def get_financial_descriptors(tickers):
     result= {}
     for t in raw_data:
         sys.stdout.write('%s ' % t)
-        result[t]= process_raw_data(raw_data[t])
+        result[t]= process_key_raw_data(raw_data[t])
 
     print('')
     
@@ -257,17 +277,21 @@ def process_balance_sheet_raw_data(string):
     
     return pd.DataFrame(data= results, index= index)
 
-def get_balance_sheet_data(tickers):
+def get_balance_sheet_data(tickers, max_trials= 10):
     raw_data= {}
     sys.stdout.write('Downloading balance sheet data for ')
     for t in tickers:
+        num_trials= 0
         sys.stdout.write('%s, ' % t)
-        url= 'http://financials.morningstar.com/ajax/ReportProcess4CSV.html?t=%s&reportType=bs&period=3&dataType=A&order=asc&columnYear=10&number=3' % t
-        try:
-            s= requests.get(url).content
-            raw_data[t]= s.decode('utf-8')
-        except:
-            print('Error: downloading %s data failed' % t)
+        url= 'http://financials.morningstar.com/ajax/ReportProcess4CSV.html?t=%s&reportType=bs&period=12&dataType=A&order=asc&columnYear=10&number=3' % t
+        while num_trials < max_trials:
+            num_trials= num_trials + 1
+            try:
+                s= requests.get(url).content
+                raw_data[t]= s.decode('utf-8')
+                break
+            except:
+                print('WARNING: downloading %s data failed at trial %d' % (t, num_trials))
     
     print('')
     
@@ -315,17 +339,21 @@ def process_cashflow_raw_data(string):
     
     return pd.DataFrame(data= results, index= index)
 
-def get_cashflow_data(tickers):
+def get_cashflow_data(tickers, max_trials= 10):
     raw_data= {}
     sys.stdout.write('Downloading cashflow data for ')
     for t in tickers:
+        num_trials= 0
         sys.stdout.write('%s, ' % t)
-        url= 'http://financials.morningstar.com/ajax/ReportProcess4CSV.html?t=%s&reportType=cf&period=3&dataType=A&order=asc&columnYear=10&number=3' % t
-        try:
-            s= requests.get(url).content
-            raw_data[t]= s.decode('utf-8')
-        except:
-            print('Error: downloading %s data failed' % t)
+        url= 'http://financials.morningstar.com/ajax/ReportProcess4CSV.html?t=%s&reportType=cf&period=12&dataType=A&order=asc&columnYear=10&number=3' % t
+        while num_trials < max_trials:
+            num_trials= num_trials + 1
+            try:
+                s= requests.get(url).content
+                raw_data[t]= s.decode('utf-8')
+                break
+            except:
+                print('Warning: downloading %s data failed at trial %d' % (t, num_trials))
     
     print('')
     
@@ -364,17 +392,21 @@ def process_income_statement_raw_data(string):
     
     return pd.DataFrame(data= results, index= index)
 
-def get_income_statement_data(tickers):
+def get_income_statement_data(tickers, max_trials= 10):
     raw_data= {}
     sys.stdout.write('Downloading income statement data for ')
     for t in tickers:
+        num_trials= 0
         sys.stdout.write('%s, ' % t)
-        url= 'http://financials.morningstar.com/ajax/ReportProcess4CSV.html?t=%s&reportType=is&period=3&dataType=A&order=asc&columnYear=10&number=3' % t
-        try:
-            s= requests.get(url).content
-            raw_data[t]= s.decode('utf-8')
-        except:
-            print('Error: downloading %s data failed' % t)
+        url= 'http://financials.morningstar.com/ajax/ReportProcess4CSV.html?t=%s&reportType=is&period=12&dataType=A&order=asc&columnYear=10&number=3' % t
+        while num_trials < max_trials:
+            num_trials= num_trials + 1
+            try:
+                s= requests.get(url).content
+                raw_data[t]= s.decode('utf-8')
+                break
+            except:
+                print('Warning: downloading %s data failed at trial %d' % (t, num_trials))
     
     print('')
     
@@ -384,7 +416,7 @@ def get_income_statement_data(tickers):
         
     return results
 
-def process_raw_data(string):
+def process_key_raw_data(string):
     """
     Processes the raw data downloaded from morningstar.
     Args:
